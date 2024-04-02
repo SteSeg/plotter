@@ -2,6 +2,7 @@ from __future__ import annotations
 from ast import literal_eval
 from collections import defaultdict
 import copy
+from ctypes import c_int32, c_char_p
 import hashlib
 import itertools
 import pickle
@@ -17,7 +18,7 @@ import numpy as np
 
 from . import __version__
 from .statepointmodel import StatePointModel
-from .plot_colors import random_rgb, reset_seed
+from .plot_colors import random_rgb
 
 ID, NAME, COLOR, COLORLABEL, MASK, HIGHLIGHT = range(6)
 
@@ -170,9 +171,6 @@ class PlotModel:
         self.appliedScores = ()
         self.appliedNuclides = ()
 
-        # reset random number seed for consistent
-        # coloring when reloading a model
-        reset_seed()
         self.previousViews = []
         self.subsequentViews = []
 
@@ -333,11 +331,11 @@ class PlotModel:
         # generate colors if not present
         for cell_id, cell in cv.cells.items():
             if cell.color is None:
-                cell.color = random_rgb()
+                cv.cells.set_color(cell_id, random_rgb())
 
         for mat_id, mat in cv.materials.items():
             if mat.color is None:
-                mat.color = random_rgb()
+                cv.material.set_color(mat_id, random_rgb())
 
         # construct image data
         domain[_OVERLAP] = DomainView(_OVERLAP, "Overlap", cv.overlap_color)
@@ -999,8 +997,9 @@ class PlotView:
             self.materials = restore_view.materials
             self.selectedTally = restore_view.selectedTally
         else:
-            self.cells = self.getDomains('cell')
-            self.materials = self.getDomains('material')
+            rng = np.random.RandomState(10)
+            self.cells = self.getDomains('cell', rng)
+            self.materials = self.getDomains('material', rng)
             self.selectedTally = None
 
     def __getattr__(self, name):
@@ -1025,7 +1024,7 @@ class PlotView:
         return hash(self.__dict__.__str__() + self.__str__())
 
     @staticmethod
-    def getDomains(domain_type):
+    def getDomains(domain_type, rng):
         """ Return dictionary of domain settings.
 
         Retrieve cell or material ID numbers and names from .xml files
@@ -1046,26 +1045,39 @@ class PlotView:
             raise ValueError("Domain type, {}, requested is neither "
                              "'cell' nor 'material'.".format(domain_type))
 
-        lib_domain = None
+        # Get number of domains, functions for ID/name, and dictionary for defaults
         if domain_type == 'cell':
-            lib_domain = openmc.lib.cells
+            num_domain = len(openmc.lib.cells)
+            get_id = openmc.lib.core._dll.openmc_cell_get_id
+            get_name = openmc.lib.core._dll.openmc_cell_get_name
         elif domain_type == 'material':
-            lib_domain = openmc.lib.materials
+            num_domain = len(openmc.lib.materials)
+            get_id = openmc.lib.core._dll.openmc_material_get_id
+            get_name = openmc.lib.core._dll.openmc_material_get_name
 
-        domains = {}
-        for domain, domain_obj in lib_domain.items():
-            name = domain_obj.name
-            domains[domain] = DomainView(domain, name, random_rgb())
+        # Sample default colors for each domain
+        colors = rng.randint(256, size=(num_domain, 3))
+
+        domain_id_c = c_int32()
+        name_c = c_char_p()
+        defaults = {}
+        for i, color in enumerate(colors):
+            # Get ID and name for each domain
+            get_id(i, domain_id_c)
+            get_name(i, name_c)
+            domain_id = domain_id_c.value
+            name = name_c.value.decode()
+
+            # Create default domain view for this domain
+            defaults[domain_id] = DomainView(domain_id, name, color)
 
         # always add void to a material domain at the end
         if domain_type == 'material':
             void_id = _VOID_REGION
-            domains[void_id] = DomainView(void_id, "VOID",
-                                          (255, 255, 255),
-                                          False,
-                                          False)
+            defaults[void_id] = DomainView(void_id, "VOID", (255, 255, 255),
+                                          False, False)
 
-        return domains
+        return DomainViewDict(defaults)
 
     def adopt_plotbase(self, view):
         """
@@ -1083,6 +1095,50 @@ class PlotView:
         self.h_res = view.h_res
         self.v_res = view.v_res
         self.basis = view.basis
+
+
+class DomainViewDict(dict):
+    """Dictionary of domain ID to DomainView objects with shared defaults
+
+    When the active/current view changes in the plotter, this dictionary gets
+    deepcopied. To avoid the dictionary being huge for models with lots of
+    cells/materials, defaults are stored separately and the key/value pairs in
+    this dictionary represent modifications to the default pairs. When an item
+    is looked up, if there is no locally modified version we pull the value from
+    the defaults dictionary.
+
+    """
+    def __init__(self, defaults: dict):
+        self.defaults = defaults
+
+    def __getitem__(self, key) -> DomainView:
+        if key in self:
+            return super().__getitem__(key)
+        else:
+            # If key is not present, pull it from the defaults
+            return self.defaults[key]
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        obj = cls.__new__(cls)
+        memo[id(self)] = obj
+        for key, value in self.items():
+            obj[key] = copy.deepcopy(value)
+        # Shallow copy the defaults dictionary
+        obj.defaults = self.defaults
+        return obj
+
+    def set_color(self, key: int, color):
+        domain = self[key]
+        self[key] = DomainView(domain.id, domain.name, color, domain.masked, domain.highlight)
+
+    def set_masked(self, key: int, masked: bool):
+        domain = self[key]
+        self[key] = DomainView(domain.id, domain.name, domain.color, masked, domain.highlight)
+
+    def set_highlight(self, key: int, highlight: bool):
+        domain = self[key]
+        self[key] = DomainView(domain.id, domain.name, domain.color, domain.masked, highlight)
 
 
 class DomainView:
