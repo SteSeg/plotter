@@ -111,6 +111,8 @@ class PlotModel:
         If True, use plot_settings.pkl file to reload settings
     model_path : pathlib.Path
         Path to model XML file or directory
+    default_res : int
+        Default resolution as the number of pixels in each direction
 
     Attributes
     ----------
@@ -147,7 +149,7 @@ class PlotModel:
         have unapplied changes
     """
 
-    def __init__(self, use_settings_pkl, model_path):
+    def __init__(self, use_settings_pkl, model_path, default_res):
         """ Initialize PlotModel class attributes """
 
         # Retrieve OpenMC Cells/Materials
@@ -174,7 +176,7 @@ class PlotModel:
         self.previousViews = []
         self.subsequentViews = []
 
-        self.defaultView = self.getDefaultView()
+        self.defaultView = self.getDefaultView(default_res)
 
         if model_path.is_file():
             settings_pkl = model_path.with_name('plot_settings.pkl')
@@ -228,7 +230,8 @@ class PlotModel:
                             self.statepoint = None
 
                     self.currentView = PlotView(restore_view=view,
-                                                restore_domains=restore_domains)
+                                                restore_domains=restore_domains,
+                                                default_res=default_res)
 
         else:
             self.currentView = copy.deepcopy(self.defaultView)
@@ -256,13 +259,18 @@ class PlotModel:
         if self._statepoint and not self._statepoint.is_open:
             self._statepoint.open()
 
-    def getDefaultView(self):
+    def getDefaultView(self, default_res):
         """ Generates default PlotView instance for OpenMC geometry
 
         Centers plot view origin in every dimension if possible. Defaults
         to xy basis, with height and width to accomodate full size of
         geometry. Defaults to (0, 0, 0) origin with width and heigth of
         25 if geometry bounding box cannot be generated.
+
+        Parameters
+        ----------
+        default_res : int
+            Default resolution as the number of pixels in each direction
 
         Returns
         -------
@@ -286,7 +294,8 @@ class PlotModel:
         else:
             zcenter = 0.00
 
-        default = PlotView([xcenter, ycenter, zcenter], width, height)
+        default = PlotView([xcenter, ycenter, zcenter], width, height,
+                           default_res=default_res)
         return default
 
     def resetColors(self):
@@ -760,6 +769,8 @@ class ViewParam(openmc.lib.plot._PlotBase):
         Width of plot view in model units
     height : float
         Height of plot view in model units
+    default_res : int
+        Default resolution as the number of pixels in each direction
 
     Attributes
     ----------
@@ -781,7 +792,7 @@ class ViewParam(openmc.lib.plot._PlotBase):
         The universe level for the plot (default: -1 -> all universes shown)
     """
 
-    def __init__(self, origin=(0, 0, 0), width=10, height=10):
+    def __init__(self, origin=(0, 0, 0), width=10, height=10, default_res=1000):
         """Initialize ViewParam attributes"""
         super().__init__()
 
@@ -790,8 +801,8 @@ class ViewParam(openmc.lib.plot._PlotBase):
         self.origin = origin
         self.width = width
         self.height = height
-        self.h_res = 1000
-        self.v_res = 1000
+        self.h_res = default_res
+        self.v_res = default_res
         self.basis = 'xy'
         self.color_overlaps = False
 
@@ -976,15 +987,22 @@ class PlotView:
                       'h_res', 'v_res', 'basis', 'llc', 'urc', 'color_overlaps')
 
     def __init__(self, origin=(0, 0, 0), width=10, height=10, restore_view=None,
-                 restore_domains=False):
+                 restore_domains=False, default_res=None):
         """Initialize PlotView attributes"""
 
         if restore_view is not None:
             self.view_ind = copy.copy(restore_view.view_ind)
             self.view_params = copy.copy(restore_view.view_params)
+            if default_res is not None:
+                p = self.view_params
+                p.h_res = default_res
+                p.v_res = int(default_res * p.height / p.width)
         else:
             self.view_ind = PlotViewIndependent()
-            self.view_params = ViewParam(origin=origin, width=width, height=height)
+            if default_res is not None:
+                self.view_params = ViewParam(origin, width, height, default_res)
+            else:
+                self.view_params = ViewParam(origin, width, height)
 
         # Get model domain info
         if restore_domains and restore_view is not None:
