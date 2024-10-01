@@ -140,6 +140,14 @@ class PlotModel:
     subsequentViews : list of PlotView instances
         List of undone plot view settings used to redo changes made
         in plot explorer
+    sourceSitesTolerance : float
+        Tolerance for source site plotting (default 0.1 cm)
+    sourceSitesColor : tuple of 3 int
+        RGB color for source site plotting (default blue)
+    sourceSitesVisible : bool
+        Whether to plot source sites (default True)
+    sourceSites :  Source sites to plot
+        Set of source locations to plot
     defaultView : PlotView
         Default settings for given geometry
     currentView : PlotView
@@ -177,6 +185,13 @@ class PlotModel:
         self.subsequentViews = []
 
         self.defaultView = self.getDefaultView(default_res)
+
+        # Source site defaults
+        self.sourceSitesApplyTolerance = False
+        self.sourceSitesTolerance = 0.1 # cm
+        self.sourceSitesColor = (0, 0, 255)
+        self.sourceSitesVisible = True
+        self.sourceSites = None
 
         if model_path.is_file():
             settings_pkl = model_path.with_name('plot_settings.pkl')
@@ -398,6 +413,15 @@ class PlotModel:
             self.storeCurrent()
             self.activeView = self.subsequentViews.pop()
             self.generatePlot()
+
+    def getExternalSourceSites(self, n=100):
+        """Plot source sites from a source file
+        """
+        if n == 0:
+            self.source_sites = None
+            return
+        sites = openmc.lib.sample_external_source(n)
+        self.sourceSites = np.array([s.r for s in sites[:n]], dtype=float)
 
     def storeCurrent(self):
         """ Add current view to previousViews list """
@@ -786,6 +810,8 @@ class ViewParam(openmc.lib.plot._PlotBase):
         Vertical resolution of plot image
     basis : {'xy', 'xz', 'yz'}
         The basis directions for the plot
+    slice_axis : int
+        The axis along which the plot is sliced
     color_overlaps : bool
         Indicator of whether or not overlaps will be shown
     level : int
@@ -805,6 +831,15 @@ class ViewParam(openmc.lib.plot._PlotBase):
         self.v_res = default_res
         self.basis = 'xy'
         self.color_overlaps = False
+
+    @property
+    def slice_axis(self):
+        if self.basis == 'xy':
+            return 2
+        elif self.basis == 'yz':
+            return 0
+        else:
+            return 1
 
     @property
     def llc(self):
